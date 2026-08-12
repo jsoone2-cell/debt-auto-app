@@ -47,8 +47,8 @@ if st.button("✨ AI 시각 분석 시작", type="primary"):
                 img = images[0]
 
                 prompt = """
-                당신은 개인회생 서류 작성 전문가입니다. 첨부된 부채증명서(금융거래 잔액 확인서 등) 이미지의 표 구조를 정밀하게 분석하여 다음 항목을 오직 순수 JSON 형식으로만 답하세요. (다른 설명이나 마크다운 백틱 ```json 등은 절대 출력하지 마세요)
-                
+                당신은 개인회생 서류 작성 전문가입니다. 첨부된 부채증명서(금융거래 잔액 확인서 등) 이미지의 표 구조를 정밀하게 분석하여 다음 항목을 오직 순수 JSON 형식으로만 답하세요. 다른 설명이나 마크다운 백틱은 절대 출력하지 마세요.
+
                 {
                     "creditor_name": "채권자명 (예: 현대카드 주식회사, 삼성카드 주식회사 등)",
                     "person_type": "법인 또는 자연인",
@@ -65,4 +65,4 @@ if st.button("✨ AI 시각 분석 시작", type="primary"):
                 response = model.generate_content([prompt, img])
                 raw_res = response.text.strip()
                 
-                clean_json_str = raw_res.replace('
+                clean_json_str = raw_res.replace("```json", "").replace("
