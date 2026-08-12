@@ -1,4 +1,1 @@
-streamlit
-openai
-pandas
-pdf2image
+
