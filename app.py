@@ -62,7 +62,4 @@ if st.button("✨ AI 시각 분석 시작", type="primary"):
                 }
                 """
 
-                response = model.generate_content([prompt, img])
-                raw_res = response.text.strip()
-                
-                clean_json_str = raw_res.replace("```json", "").replace("
+                response = model.generate
