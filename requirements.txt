@@ -1,4 +1,4 @@
 streamlit
+google-generativeai
 pandas
 pdf2image
-pytesseract
