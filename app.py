@@ -7,39 +7,113 @@ import re
 from pdf2image import convert_from_bytes
 import pytesseract
 
-st.set_page_config(page_title="개인회생 스마트 채권자목록 에디터", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="개인회생 위치 학습형 에디터", page_icon="🧠", layout="wide")
 
-st.title("⚖️ 개인회생 채권자목록 스마트 자동 추출기")
-st.markdown("부채증명서를 올리면 AI가 문서의 '원금'과 '이자' 패턴을 정밀하게 분석하여 채권자목록을 채워줍니다!")
+st.title("🧠 위치 패턴을 학습하는 채권자목록 에디터")
+st.markdown("부채증명서의 '키워드 기준 상대적 위치(줄 간격)'를 학습하여 다음부터 정확한 위치의 숫자를 찾아냅니다!")
 
-# 정밀 금액 추출 함수 (키워드 근처의 숫자를 정확히 타겟팅)
-def parse_smart_amount(text, target_keyword):
+RULE_FILE = "position_rules.json"
+
+# 저장된 위치 규칙 불러오기
+def load_rules():
+    if os.path.exists(RULE_FILE):
+        with open(RULE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+# 위치 규칙 저장하기 (키워드 기준 상대적 줄 오프셋 저장)
+def save_position_rule(inst_key, rule_data):
+    rules = load_rules()
+    rules[inst_key] = rule_data
+    with open(RULE_FILE, "w", encoding="utf-8") as f:
+        json.dump(rules, f, ensure_ascii=False, indent=4)
+
+# 텍스트에서 특정 키워드 기준으로 상대 위치(오프셋)에 있는 숫자를 찾는 함수
+def extract_by_position_rule(lines, rule):
     try:
-        lines = text.split('\n')
-        for line in lines:
-            if target_keyword in line:
-                # 해당 줄에서 숫자와 콤마 패턴 추출
-                numbers = re.findall(r'[\d,]+', line)
-                for num_str in numbers:
-                    clean_num = num_str.replace(',', '')
-                    # 너무 작은 숫자(연도, 페이지 등)는 제외하고 4자리 이상 금액만 인정
-                    if len(clean_num) >= 4:
-                        return int(clean_num)
+        anchor = rule.get("anchor_keyword", "합계")
+        offset = rule.get("line_offset", 0)
+        
+        anchor_idx = -1
+        for idx, line in enumerate(lines):
+            if anchor in line:
+                anchor_idx = idx
+                break
+        
+        if anchor_idx != -1 and 0 <= anchor_idx + offset < len(lines):
+            target_line = lines[anchor_idx + offset]
+            numbers = re.findall(r'[\d,]+', target_line)
+            for num_str in numbers:
+                clean = num_str.replace(',', '')
+                if len(clean) >= 4:
+                    return int(clean)
         return 0
     except:
         return 0
 
-# 세션 상태 초기화
+# 기본 스캔 및 위치 추적 함수
+def smart_scan(full_text):
+    lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+    
+    # 기본 기관 판별
+    c_name = "확인필요"
+    addr = ""
+    phone = ""
+    cause = "신용카드사용채무 / 대출금"
+    
+    if "현대카드" in full_text:
+        c_name = "현대카드 주식회사"
+        addr = "서울특별시 영등포구 의사당대로 3"
+        phone = "1577-6000"
+        cause = "신용카드대금"
+    elif "삼성카드" in full_text:
+        c_name = "삼성카드 주식회사"
+        addr = "서울특별시 중구 세종대로 67"
+        phone = "1588-8700"
+        cause = "신용카드대금"
+    elif "토스뱅크" in full_text:
+        c_name = "토스뱅크 주식회사"
+        addr = "서울 강남구 테헤란로 131"
+        phone = "1661-7654"
+        cause = "대출금"
+
+    # 기본값으로 대략적인 숫자 탐색
+    prin, inte = 0, 0
+    for idx, line in enumerate(lines):
+        if "합계" in line and prin == 0:
+            numbers = re.findall(r'[\d,]+', line)
+            if numbers:
+                prin = int(numbers[0].replace(',', ''))
+        if ("이자" in line or "수수료" in line) and inte == 0:
+            numbers = re.findall(r'[\d,]+', line)
+            if numbers:
+                inte = int(numbers[-1].replace(',', ''))
+
+    return {
+        "rule_key": c_name,
+        "name": c_name,
+        "person_type": "법인",
+        "start_date": "",
+        "cause": cause,
+        "address": addr,
+        "phone": phone,
+        "principal": prin if prin > 0 else 0,
+        "interest": inte if inte > 0 else 0,
+        "ref_date": "2025.10.28",
+        "_raw_lines": lines # 위치 학습을 위한 원본 라인 보관
+    }
+
 if 'creditors' not in st.session_state:
     st.session_state.creditors = []
 
 st.subheader("1. 부채증명서 PDF 업로드")
-uploaded_files = st.file_uploader("부채증명서 PDF 파일을 여러 개 업로드하세요.", type="pdf", accept_multiple_files=True)
+uploaded_files = st.file_uploader("PDF 파일을 여러 개 업로드하세요.", type="pdf", accept_multiple_files=True)
 
-if st.button("✨ 문서 정밀 분석 시작", type="primary"):
+if st.button("✨ 문서 분석 및 위치 규칙 적용", type="primary"):
     if not uploaded_files:
         st.warning("PDF 파일을 업로드해 주세요.")
     else:
+        saved_rules = load_rules()
         new_creditors = []
         
         for pdf in uploaded_files:
@@ -49,64 +123,39 @@ if st.button("✨ 문서 정밀 분석 시작", type="primary"):
                 for img in images:
                     full_text += pytesseract.image_to_string(img, lang='kor') + "\n"
                 
-                # 기본 정보 세팅
-                c_name = "확인필요"
-                addr = ""
-                phone = ""
-                cause = "신용카드사용채무 / 대출금"
-                start_dt = ""
+                lines = [line.strip() for line in full_text.split('\n') if line.strip()]
                 
-                # 기관별 기본 정보 매핑
-                if "현대카드" in full_text:
-                    c_name = "현대카드 주식회사"
-                    addr = "서울특별시 영등포구 의사당대로 3"
-                    phone = "1577-6000"
-                    cause = "신용카드대금"
-                    start_dt = "2022.08.26" # 사진 상단 손글씨/기준 참고용 기본값
-                elif "삼성카드" in full_text:
-                    c_name = "삼성카드 주식회사"
-                    addr = "서울특별시 중구 세종대로 67"
-                    phone = "1588-8700"
-                    cause = "신용카드대금"
-                elif "토스뱅크" in full_text:
-                    c_name = "토스뱅크 주식회사"
-                    addr = "서울 강남구 테헤란로 131"
-                    phone = "1661-7654"
-                    cause = "대출금"
+                # 기관 식별
+                inst_key = "기타기관"
+                if "현대카드" in full_text: inst_key = "현대카드 주식회사"
+                elif "삼성카드" in full_text: inst_key = "삼성카드 주식회사"
+                elif "토스뱅크" in full_text: inst_key = "토스뱅크 주식회사"
 
-                # 🧠 정밀 패턴으로 원금 및 이자 추출
-                # 현대카드 등의 양식에서 '합계' 행 또는 '원금' 행의 금액 탐색
-                prin = parse_smart_amount(full_text, "합계")
-                if prin == 0:
-                    prin = parse_smart_amount(full_text, "원금")
-                if prin == 0:
-                    prin = parse_smart_amount(full_text, "잔액")
+                # 이미 학습된 '위치 규칙(오프셋)'이 있는지 확인
+                if inst_key in saved_rules:
+                    rule = saved_rules[inst_key]
+                    prin = extract_by_position_rule(lines, rule.get("prin_rule", {}))
+                    inte = extract_by_position_rule(lines, rule.get("inte_rule", {}))
+                    
+                    data = smart_scan(full_text)
+                    if prin > 0: data["principal"] = prin
+                    if inte > 0: data["interest"] = inte
+                    data["rule_key"] = inst_key
+                    new_creditors.append(data)
+                else:
+                    # 학습된 규칙이 없으면 기본 스캔 결과 사용
+                    new_creditors.append(smart_scan(full_text))
 
-                inte = parse_smart_amount(full_text, "수수료/이자")
-                if inte == 0:
-                    inte = parse_smart_amount(full_text, "이자")
-
-                new_creditors.append({
-                    "name": c_name,
-                    "person_type": "법인",
-                    "start_date": start_dt,
-                    "cause": cause,
-                    "address": addr,
-                    "phone": phone,
-                    "principal": prin,
-                    "interest": inte,
-                    "ref_date": "2025.10.28"
-                })
             except Exception as e:
                 st.error(f"{pdf.name} 처리 중 오류: {e}")
         
         st.session_state.creditors = new_creditors
-        st.success("정밀 분석 완료! 아래에서 금액이 정확히 들어왔는지 확인해 보세요.")
+        st.success("분석 완료! 아래에서 금액을 확인하고 수정하세요.")
 
-# 2. 화면에서 직접 확인하고 수정하는 폼 영역
+# 2. 화면 수정 및 위치 패턴 학습 저장 영역
 if st.session_state.creditors:
     st.markdown("---")
-    st.subheader("2. 채권자 정보 확인 및 수정")
+    st.subheader("2. 채권자 정보 확인, 수정 및 위치 패턴 학습 저장")
     
     total_prin = sum(c['principal'] for c in st.session_state.creditors)
     total_inte = sum(c['interest'] for c in st.session_state.creditors)
@@ -145,23 +194,41 @@ if st.session_state.creditors:
             with c9:
                 st.session_state.creditors[idx]['ref_date'] = st.text_input(f"산정기준일 #{idx+1}", value=cred['ref_date'], key=f"rdate_{idx}")
 
-    if st.button("➕ 채권자 수동으로 추가하기"):
-        st.session_state.creditors.append({
-            "name": "새 채권자", "person_type": "법인", "start_date": "", "cause": "대출금",
-            "address": "", "phone": "", "principal": 0, "interest": 0, "ref_date": "2025.10.28"
-        })
-        st.rerun()
+            # 🧠 핵심: 변호사님이 수정한 올바른 원금 숫자가 문서 내에서 '합계' 키워드로부터 몇 번째 줄에 있는지 역산하여 위치 규칙을 영구 저장!
+            if st.button(f"💾 이 수정된 금액의 위치를 '{cred['name']}' 패턴으로 학습 저장하기", key=f"save_{idx}"):
+                inst_key = cred['name']
+                lines = cred.get("_raw_lines", [])
+                
+                # 변호사님이 입력한 올바른 원금 값
+                target_prin = int(st.session_state.creditors[idx]['principal'])
+                
+                # 문서 라인 중 이 원금 숫자가 포함된 라인을 찾아 '합계' 키워드와의 줄 간격(오프셋) 계산
+                anchor_idx = -1
+                prin_line_idx = -1
+                for l_idx, line in enumerate(lines):
+                    if "합계" in line: anchor_idx = l_idx
+                    if str(target_prin) in line.replace(',', ''): prin_line_idx = l_idx
+                
+                prin_offset = (prin_line_idx - anchor_idx) if (anchor_idx != -1 and prin_line_idx != -1) else 0
+
+                position_rule = {
+                    "prin_rule": {"anchor_keyword": "합계", "line_offset": prin_offset},
+                    "inte_rule": {"anchor_keyword": "합계", "line_offset": prin_offset + 1} # 이자는 보통 바로 아랫줄
+                }
+                
+                save_position_rule(inst_key, position_rule)
+                st.success(f"성공! '{inst_key}'의 문서 위치 패턴(합계 기준 오프셋: {prin_offset}줄)이 완벽하게 학습되었습니다. 다음부터 이 양식은 이 위치를 찾아 자동으로 추출합니다!")
 
     st.markdown("---")
     st.subheader("3. 최종 다운로드")
     
     df_export = pd.DataFrame(st.session_state.creditors)
-    csv_data = df_export.to_csv(index=False).encode('utf-8-sig')
+    csv_data = df_export.drop(columns=['_raw_lines'], errors='ignore').to_csv(index=False).encode('utf-8-sig')
     
     st.download_button(
         label="📥 채권자목록 최종 다운로드 (CSV)",
         data=csv_data,
-        file_name="채권자목록_정밀추출.csv",
+        file_name="채권자목록_위치학습완료.csv",
         mime="text/csv",
         type="primary"
     )
