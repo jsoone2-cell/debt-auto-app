@@ -1,103 +1,122 @@
 import streamlit as st
+import openai
 import pandas as pd
 from datetime import datetime
 import io
-import re
+import json
+import os
+import tempfile
 from pdf2image import convert_from_bytes
-import pytesseract
+import base64
 
-st.set_page_config(page_title="개인회생 채권자목록 작성 관리자", page_icon="📝", layout="wide")
+st.set_page_config(page_title="개인회생 채권자목록 AI 에디터", page_icon="🤖", layout="wide")
 
-st.title("📝 개인회생 채권자목록 자동 추출 및 편집기")
-st.markdown("부채증명서 PDF를 올리면 아래 입력 폼에 내용이 자동으로 채워집니다. 화면에서 직접 수정하신 후 최종 다운로드하세요!")
+st.title("🤖 개인회생 채권자목록 AI 자동 추출 및 편집기")
+st.markdown("부채증명서 PDF를 올리면, AI가 문서를 직접 눈으로 읽고 정확한 금액과 날짜를 입력 폼에 채워줍니다!")
 
-# 세션 상태에 채권자 목록 데이터 저장 (화면 새로고침 시 유지용)
+# 사이드바에 API 키 입력 (오류 없는 OpenAI 사용)
+with st.sidebar:
+    st.header("⚙️ 설정")
+    openai_api_key = st.text_input("OpenAI API 키 (sk-...) 입력", type="password")
+    st.markdown("---")
+    st.markdown("💡 **Tip:** OpenAI API 키는 [OpenAI 플랫폼](https://platform.openai.com/api-keys)에서 무료로 발급받을 수 있습니다.")
+
+# 세션 상태 초기화
 if 'creditors' not in st.session_state:
     st.session_state.creditors = []
 
-# 파일 업로드 영역
 st.subheader("1. 부채증명서 PDF 업로드")
-uploaded_files = st.file_uploader("PDF 파일을 여러 개 업로드하세요.", type="pdf", accept_multiple_files=True)
+uploaded_files = st.file_uploader("부채증명서 PDF 파일을 여러 개 업로드하세요.", type="pdf", accept_multiple_files=True)
 
-# 금액 추출 헬퍼 함수
-def parse_amount(text, keyword):
-    try:
-        patterns = [f"{keyword}.*?([0-9,]{{4,}})\\s*원", f"{keyword}.*?([0-9,]{{4,}})"]
-        for p in patterns:
-            match = re.search(p, text.replace(" ", ""))
-            if match:
-                return int(match.group(1).replace(",", ""))
-        return 0
-    except:
-        return 0
-
-if st.button("✨ 부채증명서 자동 읽기 및 입력 폼 생성", type="primary"):
-    if not uploaded_files:
-        st.warning("PDF 파일을 먼저 업로드해 주세요.")
+if st.button("✨ AI 시각 분석 시작", type="primary"):
+    if not openai_api_key:
+        st.error("좌측 사이드바에 OpenAI API 키를 입력해 주세요.")
+    elif not uploaded_files:
+        st.warning("PDF 파일을 하나 이상 업로드해 주세요.")
     else:
+        client = openai.OpenAI(api_key=openai_api_key)
         new_creditors = []
-        for pdf in uploaded_files:
-            try:
-                images = convert_from_bytes(pdf.read())
-                full_text = ""
-                for img in images:
-                    full_text += pytesseract.image_to_string(img, lang='kor') + "\n"
-                
-                # 기본값 설정
-                c_name = "확인필요"
-                addr = ""
-                phone = ""
-                cause = "신용카드사용채무 / 대출금"
-                
-                if "현대카드" in full_text:
-                    c_name = "현대카드 주식회사"
-                    addr = "서울특별시 영등포구 의사당대로 3"
-                    phone = "1577-6000"
-                    cause = "신용카드대금"
-                elif "삼성카드" in full_text:
-                    c_name = "삼성카드 주식회사"
-                    addr = "서울특별시 중구 세종대로 67"
-                    phone = "1588-8700"
-                    cause = "신용카드대금"
-                elif "토스뱅크" in full_text or "TOSS" in full_text.upper():
-                    c_name = "토스뱅크 주식회사"
-                    addr = "서울 강남구 테헤란로 131"
-                    phone = "1661-7654"
-                    cause = "대출금"
-                elif "김창곤" in full_text:
-                    c_name = "김창곤"
-                    cause = "개인대여금"
-                elif "김아림" in full_text:
-                    c_name = "김아림"
-                    cause = "개인대여금"
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-                prin = parse_amount(full_text, "원금")
-                if prin == 0: prin = parse_amount(full_text, "잔액")
-                inte = parse_amount(full_text, "이자")
+        for idx, pdf in enumerate(uploaded_files):
+            status_text.text(f"[{pdf.name}] AI가 문서를 눈으로 정밀 분석 중입니다... 🧐")
+            
+            try:
+                # PDF를 이미지로 변환 (앞장 1~2페이지만 분석)
+                images = convert_from_bytes(pdf.read())
+                base64_images = []
+                
+                for img in images[:2]:
+                    temp_img = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                    img.save(temp_img.name, "PNG")
+                    with open(temp_img.name, "rb") as image_file:
+                        encoded = base64.b64encode(image_file.read()).decode('utf-8')
+                        base64_images.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{encoded}"}
+                        })
+                    os.remove(temp_img.name)
+
+                # AI에게 내리는 엄격한 추출 지시서 (프롬프트)
+                prompt = """
+                당신은 개인회생 서류 작성 전문가입니다. 첨부된 부채증명서(금융거래 잔액 확인서 등) 이미지에서 다음 항목을 정확히 찾아 오직 JSON 형식으로만 답하세요. (다른 설명은 절대 금지)
+                
+                [추출할 항목]
+                - creditor_name: 채권자명 (예: 현대카드 주식회사, 삼성카드 주식회사, 토스뱅크 등)
+                - person_type: "법인" 또는 "자연인"
+                - start_date: 최초대출일 또는 카드발급일 (예: 2022.08.26 형식, 없으면 "")
+                - cause: 채권의 내용/원인 (예: 신용카드대금, 대출금 등)
+                - address: 주소 (예: 서울특별시 영등포구 의사당대로 3, 없으면 "")
+                - phone: 대표전화 (예: 1577-6000, 없으면 "")
+                - principal: 원금 잔액 (숫자만 추출, 예: 3174260)
+                - interest: 이자/수수료 잔액 (숫자만 추출, 예: 87087)
+                - ref_date: 산정기준일 (예: 2025.10.28 형식)
+                """
+
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": prompt}, *base64_images]
+                        }
+                    ],
+                    max_tokens=800
+                )
+
+                raw_res = response.choices[0].message.content.strip()
+                json_str = raw_res.replace('```json', '').replace('```', '').strip()
+                data = json.loads(json_str)
 
                 new_creditors.append({
-                    "name": c_name,
-                    "person_type": "법인" if "주식회사" in c_name or "카드" in c_name or "뱅크" in c_name else "자연인",
-                    "start_date": "",
-                    "cause": cause,
-                    "address": addr,
-                    "phone": phone,
-                    "principal": prin,
-                    "interest": inte,
-                    "ref_date": "2025-10-28"
+                    "name": data.get("creditor_name", "확인필요"),
+                    "person_type": data.get("person_type", "법인"),
+                    "start_date": data.get("start_date", ""),
+                    "cause": data.get("cause", "대출금"),
+                    "address": data.get("address", ""),
+                    "phone": data.get("phone", ""),
+                    "principal": int(data.get("principal", 0)),
+                    "interest": int(data.get("interest", 0)),
+                    "ref_date": data.get("ref_date", "2025.10.28")
                 })
-            except Exception as e:
-                st.error(f"{pdf.name} 분석 중 오류: {e}")
-        
-        st.session_state.creditors = new_creditors
-        st.success(f"총 {len(new_creditors)}개의 채권자 정보가 아래 입력 폼에 쏙쏙 들어왔습니다!")
 
-# 2. 화면에서 직접 확인하고 수정할 수 있는 입력 폼 영역
+            except Exception as e:
+                st.error(f"⚠️ {pdf.name} 분석 중 오류 발생: {e}")
+            
+            progress_bar.progress((idx + 1) / len(uploaded_files))
+
+        st.session_state.creditors = new_creditors
+        status_text.text("✨ 분석 완료!")
+        st.success(f"총 {len(new_creditors)}개의 채권자 정보가 정확하게 추출되어 아래 입력 폼에 채워졌습니다.")
+
+# 2. 웹 화면에서 직접 확인하고 수정하는 폼 영역 (첫 번째 사진 형태)
 if st.session_state.creditors:
     st.markdown("---")
     st.subheader("2. 채권자 정보 확인 및 직접 수정 (첫 번째 사진 형태)")
     
-    # 상단 요약 바 계산
+    # 합계 계산
     total_prin = sum(c['principal'] for c in st.session_state.creditors)
     total_inte = sum(c['interest'] for c in st.session_state.creditors)
     total_sum = total_prin + total_inte
@@ -109,9 +128,8 @@ if st.session_state.creditors:
     
     st.markdown("---")
 
-    # 각 채권자별 수정 가능한 박스 생성
     for idx, cred in enumerate(st.session_state.creditors):
-        with st.expander(f"📌 {idx+1}. {cred['name']} (원금: {cred['principal']:,}원)", expanded=True):
+        with st.expander(f"📌 {idx+1}. {cred['name']} (원금: {cred['principal']:,}원 / 이자: {cred['interest']:,}원)", expanded=True):
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 st.session_state.creditors[idx]['name'] = st.text_input(f"채권자명 #{idx+1}", value=cred['name'])
@@ -136,25 +154,23 @@ if st.session_state.creditors:
             with c9:
                 st.session_state.creditors[idx]['ref_date'] = st.text_input(f"산정기준일 #{idx+1}", value=cred['ref_date'])
 
-    # 채권자 추가 버튼 등 확장 가능
     if st.button("➕ 채권자 수동으로 추가하기"):
         st.session_state.creditors.append({
             "name": "새 채권자", "person_type": "법인", "start_date": "", "cause": "대출금",
-            "address": "", "phone": "", "principal": 0, "interest": 0, "ref_date": "2025-10-28"
+            "address": "", "phone": "", "principal": 0, "interest": 0, "ref_date": "2025.10.28"
         })
         st.rerun()
 
     st.markdown("---")
     st.subheader("3. 최종 다운로드")
     
-    # 수정된 데이터를 CSV 또는 엑셀 형태로 변환하여 다운로드 제공
     df_export = pd.DataFrame(st.session_state.creditors)
     csv_data = df_export.to_csv(index=False).encode('utf-8-sig')
     
     st.download_button(
-        label="📥 수정 완료된 채권자목록 CSV 다운로드",
+        label="📥 수정 완료된 채권자목록 다운로드 (CSV)",
         data=csv_data,
-        file_name="최종_채권자목록.csv",
+        file_name="개인회생_채권자목록_최종.csv",
         mime="text/csv",
         type="primary"
     )
