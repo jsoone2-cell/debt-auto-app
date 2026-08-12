@@ -8,9 +8,8 @@ from pdf2image import convert_from_bytes
 st.set_page_config(page_title="개인회생 AI 시각 에디터", page_icon="✨", layout="wide")
 
 st.title("✨ 구글 Gemini 시각 AI 기반 채권자목록 에디터")
-st.markdown("부채증명서 PDF를 올리면, AI가 문서를 직접 눈으로 보고 표의 '원금'과 '이자'를 정확히 추출하여 입력 폼에 채워줍니다!")
+st.markdown("부채증명서 PDF를 올리면, AI가 문서를 직접 눈으로 보고 표의 '원금'과 '이자'를 정확히 추출합니다!")
 
-# 사이드바에 구글 API 키 입력
 with st.sidebar:
     st.header("⚙️ 설정")
     gemini_api_key = st.text_input("Google Gemini API 키 (AIza...) 입력", type="password")
@@ -29,8 +28,8 @@ if st.button("✨ AI 시각 분석 시작", type="primary"):
     elif not uploaded_files:
         st.warning("PDF 파일을 하나 이상 업로드해 주세요.")
     else:
-        genai.configure(api_key=gemini_api_key)
-        # 안정적인 모델로 설정
+        # 공백 제거 처리하여 설정
+        genai.configure(api_key=gemini_api_key.strip())
         model = genai.GenerativeModel('gemini-2.0-flash')
         
         new_creditors = []
@@ -38,7 +37,7 @@ if st.button("✨ AI 시각 분석 시작", type="primary"):
         status_text = st.empty()
 
         for idx, pdf in enumerate(uploaded_files):
-            status_text.text(f"[{pdf.name}] AI가 문서를 눈으로 정밀 분석 중입니다... 🧐")
+            status_text.text(f"[{pdf.name}] AI가 문서를 정밀 분석 중입니다... 🧐")
             
             try:
                 images = convert_from_bytes(pdf.read(), first_page=1, last_page=1)
@@ -65,7 +64,6 @@ if st.button("✨ AI 시각 분석 시작", type="primary"):
                 response = model.generate_content([prompt, img])
                 raw_res = response.text.strip()
                 
-                # 마크다운 표식 제거 및 JSON 파싱
                 clean_json_str = raw_res.replace("```json", "").replace("```", "").strip()
                 data = json.loads(clean_json_str)
 
@@ -88,23 +86,12 @@ if st.button("✨ AI 시각 분석 시작", type="primary"):
 
         st.session_state.creditors = new_creditors
         status_text.text("✨ 분석 완료!")
-        st.success(f"총 {len(new_creditors)}개의 채권자 정보가 정확하게 추출되어 아래 입력 폼에 채워졌습니다.")
+        st.success(f"총 {len(new_creditors)}개의 채권자 정보가 추출되었습니다.")
 
 if st.session_state.creditors:
     st.markdown("---")
     st.subheader("2. 채권자 정보 확인 및 직접 수정")
     
-    total_prin = sum(c['principal'] for c in st.session_state.creditors)
-    total_inte = sum(c['interest'] for c in st.session_state.creditors)
-    total_sum = total_prin + total_inte
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("채권현재액 총합계", f"{total_sum:,} 원")
-    col2.metric("원금 합계", f"{total_prin:,} 원")
-    col3.metric("이자 합계", f"{total_inte:,} 원")
-    
-    st.markdown("---")
-
     for idx, cred in enumerate(st.session_state.creditors):
         with st.expander(f"📌 {idx+1}. {cred['name']} (원금: {cred['principal']:,}원 / 이자: {cred['interest']:,}원)", expanded=True):
             c1, c2, c3, c4 = st.columns(4)
@@ -113,7 +100,7 @@ if st.session_state.creditors:
             with c2:
                 st.session_state.creditors[idx]['person_type'] = st.selectbox(f"인격 구분 #{idx+1}", ["법인", "자연인"], index=0 if cred['person_type']=="법인" else 1, key=f"ptype_{idx}")
             with c3:
-                st.session_state.creditors[idx]['start_date'] = st.text_input(f"발생일자 (YYYY.MM.DD) #{idx+1}", value=cred['start_date'], key=f"sdate_{idx}")
+                st.session_state.creditors[idx]['start_date'] = st.text_input(f"발생일자 #{idx+1}", value=cred['start_date'], key=f"sdate_{idx}")
             with c4:
                 st.session_state.creditors[idx]['cause'] = st.text_input(f"발생원인 #{idx+1}", value=cred['cause'], key=f"cause_{idx}")
 
@@ -131,23 +118,8 @@ if st.session_state.creditors:
             with c9:
                 st.session_state.creditors[idx]['ref_date'] = st.text_input(f"산정기준일 #{idx+1}", value=cred['ref_date'], key=f"rdate_{idx}")
 
-    if st.button("➕ 채권자 수동으로 추가하기"):
-        st.session_state.creditors.append({
-            "name": "새 채권자", "person_type": "법인", "start_date": "", "cause": "대출금",
-            "address": "", "phone": "", "principal": 0, "interest": 0, "ref_date": "2025.10.28"
-        })
-        st.rerun()
-
     st.markdown("---")
     st.subheader("3. 최종 다운로드")
-    
     df_export = pd.DataFrame(st.session_state.creditors)
     csv_data = df_export.to_csv(index=False).encode('utf-8-sig')
-    
-    st.download_button(
-        label="📥 수정 완료된 채권자목록 다운로드 (CSV)",
-        data=csv_data,
-        file_name="개인회생_채권자목록_최종.csv",
-        mime="text/csv",
-        type="primary"
-    )
+    st.download_button("📥 채권자목록 다운로드 (CSV)", csv_data, "채권자목록_최종.csv", "text/csv")
