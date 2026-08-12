@@ -31,7 +31,7 @@ if st.button("✨ AI 시각 분석 시작", type="primary"):
     else:
         genai.configure(api_key=gemini_api_key)
         # 무료 티어에서 가장 안정적인 시각 지원 모델 사용
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel(''gemini-2.0-flash'')
         
         new_creditors = []
         progress_bar = st.progress(0)
